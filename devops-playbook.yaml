@@ -1,0 +1,155 @@
+- hosts: server
+  become: yes
+  gather_facts: yes
+  tasks:
+    - name: "server_apt"
+      apt:
+        name:
+          - curl
+          - vim
+          - python3
+          - python3-pip
+          - acl
+          - libpq-dev
+          - gnupg2
+          - apache2
+          - fail2ban
+          - samba
+          - postgresql-common
+    - name: "server_pip"
+      pip:
+        name:
+          - psycopg2
+    - name: "postgre_apt"
+      ansible.builtin.shell:
+        cmd: curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc|sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg
+      args:
+        executable: /bin/bash
+    - name: "postgre_apt2"
+      ansible.builtin.shell:
+        cmd: sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+      args:
+        executable: /bin/bash
+
+    - name: "apt_update"
+      apt:
+        update_cache: true
+    - name: "server_postgersql-16_install"
+      apt:
+        name:
+          - postgresql-16
+        update_cache: true
+    - name: "server_postgresql_start"
+      ansible.builtin.service:
+        name: postgresql
+        enabled: true
+        state: started
+    - name: "server_docker_repo"
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/debian/gpg
+        state: present
+    - name: "server_docker_apt"
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/debian {{ansible_distribution_release}} stable
+    - name: "server_docker_install"
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        update_cache: true
+#server configurating
+    - name: "apache2_www-data"
+      file:
+        path: /var/www/html/
+        owner: www-data
+        group: www-data
+        recurse: true
+    - name: "root_login_disable"
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#PermitRootLogin'
+        line: PermitRootLogin no
+    - name: "ssh_restart"
+      ansible.builtin.service:
+        name: ssh
+        state: restarted
+        enabled: true
+    - name: "fail2ban_start"
+      ansible.builtin.service:
+        name: fail2ban
+        state: started
+        enabled: true
+#samba-server configurating
+    - name: "smb_conf_backup"
+      ansible.builtin.copy:
+        src: /etc/samba/smb.conf
+        dest: /etc/samba/smb.conf.bak
+        remote_src: yes
+
+    - name: "smb_public_dir"
+      ansible.builtin.file:
+        path: /samba/public
+        state: directory
+        mode: '0755'
+
+    - name: "smb_private_dir"
+      ansible.builtin.file:
+        path: /samba/private
+        state: directory
+        mode: '0700'
+
+    - name: "create_smbgrp"
+      ansible.builtin.group:
+        name: smbgrp
+        state: present
+
+    - name: "create_user1"
+      ansible.builtin.user:
+        name: user1
+        state: present
+        groups: smbgrp
+        append: yes
+
+    - name: "private_dir_owner"
+      ansible.builtin.file:
+        path: /samba/private
+        group: smbgrp
+        state: directory
+    - name: "user1_password"
+      ansible.builtin.shell:
+        cmd: echo -e "123456\n123456" | smbpasswd -a user1
+      args:
+        executable: /bin/bash
+    - name: "smb_config"
+      ansible.builtin.copy:
+        dest: /etc/samba/smb.conf
+        content: |
+          [global]
+          workgroup = WORKGROUP
+          security = user
+          map to guest = bad user
+          wins support = no
+          dns proxy = no
+          [public]
+          path = /samba/public
+          guest ok = yes
+          force user = nobody
+          browsable = yes
+          writable = yes
+          [private]
+          path = /samba/private
+          valid users = @smbgrp
+          guest ok = no
+          browsable = yes
+          writable = yes
+        owner: root
+        group: root
+        mode: '0644'
+    - name: "smb_restart"
+      ansible.builtin.service:
+        name: smbd
+        state: restarted
+        enabled: true
